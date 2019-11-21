@@ -16,43 +16,7 @@ from statsmodels.stats.diagnostic import *
 from statsmodels.stats.outliers_influence import *
 import warnings
 
-#############################
-###
-### Hellwig's method/method of the capacity of information bearers for Python, by Antoni Baum
-### Written in Python 3.6.7
-### Requires numpy, pandas, tqdm, joblib packages
-###
-### Copyright (c) 2019 Antoni Baum (Yard1)
-### Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-### The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-### THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-###
-### usage: hellwig.py [-h] [-d DELIMETER] [-s DECIMAL_SEPARATOR] [-min MIN]
-###                   [-max MAX]
-###                   [-id INDEPENDENT_VARIABLES [INDEPENDENT_VARIABLES ...]]
-###                   file dependent_variable
-### 
-### Give the best combination of variables for modelling using Hellwig's method.
-### 
-### positional arguments:
-###   file                  Path to the data in .csv format
-###   dependent_variable    Dependent variable
-###
-### optional arguments:
-###   -h, --help            show this help message and exit
-###   -d DELIMETER, --delimeter DELIMETER
-###                         csv delimeter (Default: ;)
-###   -s DECIMAL_SEPARATOR, --decimal_separator DECIMAL_SEPARATOR
-###                         csv decimal separator (Default: ,)
-###   -min MIN, --min MIN   The smallest number of items in a combination
-###                         (Default: 1)
-###   -max MAX, --max MAX   The largest number of items in a combination (Default:
-###                         number of variables)
-###   -id INDEPENDENT_VARIABLES [INDEPENDENT_VARIABLES ...], --independent_variables INDEPENDENT_VARIABLES [INDEPENDENT_VARIABLES ...]
-###                         Independent variables to check. If not given, will
-###                         check all independent variables in the dataset
-###
-#############################
+ALPHA = 0.95
 
 def main(fname, dependent_variable, delimeter, decimal):
     df = read_csv(fname, delimeter, decimal)
@@ -61,13 +25,32 @@ def main(fname, dependent_variable, delimeter, decimal):
     independent_variables = list(df.columns)
     print(independent_variables)
     independent_variables.remove(dependent_variable)
-    combinations = Parallel(n_jobs=4)(delayed(get_combinations)(independent_variables, l) for l in tqdm(range(1, len(independent_variables)+1)))
-    combinations = [item for sublist in combinations for item in sublist]
-    results_tuple = Parallel(n_jobs=4)(delayed(get_model_result)(dependent_variable, c, df) for c in tqdm(combinations))
-    results, results_df = map(list, zip(*results_tuple))
+
+    if len(independent_variables) < 10:
+        combinations = Parallel(n_jobs=4)(delayed(get_combinations)(
+            independent_variables, l) for l in tqdm(range(1, len(independent_variables)+1)))
+        combinations = [item for sublist in combinations for item in sublist]
+        results_tuple = Parallel(n_jobs=4)(delayed(get_model_result)(
+            dependent_variable, c, df) for c in tqdm(combinations))
+        results, results_df = map(list, zip(*results_tuple))
+    else:
+        independent_df = df.drop(dependent_variable, axis=1)
+        yx_corrs = collections.OrderedDict()
+        for var in independent_variables:
+            yx_corrs[var] = df[dependent_variable].corr(df[var])
+        combinations = Parallel(n_jobs=4)(delayed(get_combinations_generator)(independent_variables, i) for i in range(1, len(independent_variables)+1))
+        best_info = hellwig(independent_df.corr(), yx_corrs, combinations)
+        print(best_info)
+        results_tuple = get_model_result(dependent_variable, get_formula(best_info[0]), df)
+        results = [results_tuple[0]]
+        results_df = [results_tuple[1]]
+        results_tuple = stepwise_backwards(dependent_variable, independent_variables, df, ALPHA)
+        results.append(results_tuple[0])
+        results_df.append(results_tuple[1])
     results.sort(key=lambda x: x[0].aic)
     best_result = results[0][0]
-    best_result_passing_tests = next((x for x in results if sum(x[2].values()) == 0), None)
+    best_result_passing_tests = next(
+        (x for x in results if sum(x[2].values()) == 0), None)
     #best_result = sm.OLS.from_formula(dependent_variable + "~ 1+hsGPA+PC+skipped+alcohol+gradMI", data=df).fit()
     #results = [best_result]
     print(best_result.summary())
@@ -77,7 +60,8 @@ def main(fname, dependent_variable, delimeter, decimal):
         print(best_result_passing_tests.summary())
         build_plot(best_result_passing_tests, df, dependent_variable)
     results_df = pd.concat(results_df)
-    results_df.to_csv (r'results_df.csv', index = None, header=True)
+    results_df.to_csv(r'results_df.csv', index=None, header=True)
+
 
 def create_dataframe(item):
     col = pd.DataFrame({'Formula': [item[1]]})
@@ -85,30 +69,68 @@ def create_dataframe(item):
     r_df = pd.read_html(results_as_html)[0]
     r_df.drop([0, 1], axis=1, inplace=True)
     r_df.dropna(axis=0, inplace=True)
-    r_df=r_df.T
+    r_df = r_df.T
     colnames = list(r_df.iloc[0])
     colnames = [x[:-1] for x in colnames]
-    r_df.columns=colnames
+    r_df.columns = colnames
     r_df.drop([2], axis=0, inplace=True)
     r_df.reset_index(inplace=True, drop=True)
     col = col.join(r_df)
     col = col.join(pd.DataFrame.from_dict([item[2]]))
     return col
 
+
 def get_combinations(col, l):
     s = []
     for subset in itertools.combinations(col, l):
-        s.append("1+" + "+".join(subset))
+        s.append(get_formula(subset))
     return s
+
+def get_formula(iterable):
+    return "1+" + "+".join(iterable)
+
+def get_combinations_generator(col, l):
+    return itertools.combinations(col, l)
+
+def hellwig(correlation_matrix, dependent_var_correlation_matrix, var_combinations):
+    best_info = []
+    for combination in tqdm(var_combinations):
+        h = Parallel(n_jobs=-1)(delayed(hellwig_singular)(correlation_matrix, dependent_var_correlation_matrix, c) for c in combination)
+        h = max(h,key=itemgetter(1))
+        best_info.append(h)
+    best_info = max(best_info,key=itemgetter(1))
+    return best_info
+
+def hellwig_singular(correlation_matrix, dependent_var_correlation_matrix, var_combination):
+    h = 0
+    var_combination = list(var_combination)
+    denominator = 0
+    for var in var_combination:
+        denominator += abs(correlation_matrix[var_combination[0]][var])
+    for var in var_combination:
+        h += (dependent_var_correlation_matrix[var]**2)/denominator
+    return (var_combination, h)
+
 
 def get_model_result(dependent_variable, rhs, df):
     mod = sm.OLS.from_formula(dependent_variable + "~" + rhs, data=df).fit()
-    tests = test_result(mod, df)
+    tests = test_result(mod, df, ALPHA)
     item = (mod, dependent_variable + "~" + rhs, tests)
     r_df = create_dataframe(item)
     return (item, r_df)
 
-def test_result(res, df, alpha = 0.95):
+def stepwise_backwards(dependent_variable, independent_variables, df, alpha = 0.95):
+    while(True):
+        model = get_model_result(dependent_variable, get_formula(independent_variables), df)
+        pvalues = list(model[0][0].pvalues.items())
+        min_pvalues = min(pvalues, key=lambda x: x[1])
+        if min_pvalues[1] <= 1-alpha:
+            break
+        independent_variables.remove(min_pvalues[0])
+    return model
+
+
+def test_result(res, df, alpha=0.95):
     try:
         each_variable_important_result = each_variable_important(res, alpha)
     except:
@@ -118,7 +140,8 @@ def test_result(res, df, alpha = 0.95):
     except:
         het_white_result = False
     try:
-        het_breuschpagan_result = het_breuschpagan(res.resid, res.model.exog)[1] < 1-alpha
+        het_breuschpagan_result = het_breuschpagan(
+            res.resid, res.model.exog)[1] < 1-alpha
     except:
         het_breuschpagan_result = False
     try:
@@ -126,14 +149,16 @@ def test_result(res, df, alpha = 0.95):
     except:
         reset_ramsey_result = False
     try:
-        linear_harvey_collier_result = linear_harvey_collier(res).pvalue < 1-alpha
+        linear_harvey_collier_result = linear_harvey_collier(
+            res).pvalue < 1-alpha
     except:
         linear_harvey_collier_result = False
     try:
         vif_result = vif(res, df)
     except:
         vif_result = False
-    return {"each_variable_important_result": each_variable_important_result, "het_white_result": het_white_result, "het_breuschpagan_result": het_breuschpagan_result, "reset_ramsey_result": reset_ramsey_result, "linear_harvey_collier_result": linear_harvey_collier_result, "vif_result": vif_result }
+    return {"each_variable_important_result": each_variable_important_result, "het_white_result": het_white_result, "het_breuschpagan_result": het_breuschpagan_result, "reset_ramsey_result": reset_ramsey_result, "linear_harvey_collier_result": linear_harvey_collier_result, "vif_result": vif_result}
+
 
 def vif(res, df):
     for i in range(len(df.columns)):
@@ -142,6 +167,7 @@ def vif(res, df):
             if v > 10:
                 return True
     return False
+
 
 def each_variable_important(res, alpha):
     for param, pvalue in res.pvalues.items():
@@ -154,7 +180,7 @@ def build_plot(res, df, dependent_variable):
     dependent_variable_str = dependent_variable
     dependent_variable = df[dependent_variable]
     prstd, iv_l, iv_u = wls_prediction_std(res)
-    fig, ax = plt.subplots(figsize=(8,6))
+    fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(dependent_variable, '-', label="data")
     ax.plot(res.fittedvalues, 'ro-', label="OLS")
     ax.plot(iv_u, 'r--')
@@ -169,13 +195,16 @@ def read_csv(fname, delimeter, decimal):
     df.apply(pd.to_numeric, errors='coerce')
     return df
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Give the best combination of variables for modelling using Hellwig\'s method.')
-    parser.add_argument( 'file', help='Path to the data in .csv format')
-    parser.add_argument( 'dependent_variable', help='Dependent variable')
+    parser = argparse.ArgumentParser(
+        description='Give the best combination of variables for modelling using Hellwig\'s method.')
+    parser.add_argument('file', help='Path to the data in .csv format')
+    parser.add_argument('dependent_variable', help='Dependent variable')
     parser.add_argument('-d', '--delimeter', required=False, default=";",
-                    help='csv delimeter (Default: ;)')
+                        help='csv delimeter (Default: ;)')
     parser.add_argument('-s', '--decimal_separator', required=False, default=",",
-                    help='csv decimal separator (Default: ,)')
+                        help='csv decimal separator (Default: ,)')
     args = parser.parse_args()
-    main(args.file, args.dependent_variable, args.delimeter, args.decimal_separator)
+    main(args.file, args.dependent_variable,
+         args.delimeter, args.decimal_separator)
