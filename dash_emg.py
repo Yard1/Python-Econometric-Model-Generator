@@ -213,4 +213,4 @@ def update_figure(data,dependent_variable,rows,selected_row_indices):
                 )])
 
 if __name__ == '__main__':
-    app.run_server(debug=True)
+    app.run_server(debug=False)
