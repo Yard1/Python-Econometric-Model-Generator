@@ -26,7 +26,7 @@ def main(df, dependent_variable):
     independent_variables.remove(dependent_variable)
     print(dependent_variable)
 
-    if len(independent_variables) < 8:
+    if len(independent_variables) < 10:
         combinations = Parallel(n_jobs=4)(delayed(get_combinations)(
             independent_variables, l) for l in tqdm(range(1, len(independent_variables)+1)))
         combinations = [item for sublist in combinations for item in sublist]
