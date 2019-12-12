@@ -1,1 +1,1 @@
-web: econometric-model-generator dash_emg:server
+web: gunicorn dash_emg:server
