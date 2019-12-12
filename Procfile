@@ -1,0 +1,1 @@
+web: econometric-model-generator dash_emg:server
