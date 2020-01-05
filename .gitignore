@@ -1,1 +1,7 @@
 results_df.csv
+venv
+*.pyc
+.DS_Store
+.env
+.vscode
+*.code-workspace

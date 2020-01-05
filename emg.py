@@ -18,13 +18,13 @@ import warnings
 
 ALPHA = 0.95
 
-def main(fname, dependent_variable, delimeter, decimal):
-    df = read_csv(fname, delimeter, decimal)
+def main(df, dependent_variable):
     df.sort_values(by=[dependent_variable], inplace=True)
     df.reset_index(inplace=True, drop=True)
     independent_variables = list(df.columns)
     print(independent_variables)
     independent_variables.remove(dependent_variable)
+    print(dependent_variable)
 
     if len(independent_variables) < 10:
         combinations = Parallel(n_jobs=4)(delayed(get_combinations)(
@@ -39,15 +39,16 @@ def main(fname, dependent_variable, delimeter, decimal):
         for var in independent_variables:
             yx_corrs[var] = df[dependent_variable].corr(df[var])
         combinations = Parallel(n_jobs=4)(delayed(get_combinations_generator)(independent_variables, i) for i in range(1, len(independent_variables)+1))
-        best_info = hellwig(independent_df.corr(), yx_corrs, combinations)
-        print(best_info)
-        results_tuple = get_model_result(dependent_variable, get_formula(best_info[0]), df)
+        #best_info = stepwise_backwards(dependent_variable, independent_variables, df, ALPHA)
+        #print(best_info)
+        #results_tuple = get_model_result(dependent_variable, get_formula(best_info[0]), df)
+        #results = [results_tuple[0]]
+        #results_df = [results_tuple[1]]
+        results_tuple = stepwise_backwards(dependent_variable, independent_variables, df, ALPHA)
         results = [results_tuple[0]]
         results_df = [results_tuple[1]]
-        results_tuple = stepwise_backwards(dependent_variable, independent_variables, df, ALPHA)
-        results.append(results_tuple[0])
-        results_df.append(results_tuple[1])
     results.sort(key=lambda x: x[0].aic)
+    return (results, pd.concat(results_df))
     best_result = results[0][0]
     best_result_passing_tests = next(
         (x for x in results if sum(x[2].values()) == 0), None)
