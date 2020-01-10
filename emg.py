@@ -1,3 +1,5 @@
+# By Antoni Baum, Bartosz Dąbrowski, Bartłomiej Gąsior, Michał Kędra, 2020
+
 #!/usr/bin/python3
 import itertools
 import math
@@ -18,6 +20,7 @@ import warnings
 
 ALPHA = 0.95
 
+
 def main(df, dependent_variable):
     df.sort_values(by=[dependent_variable], inplace=True)
     df.reset_index(inplace=True, drop=True)
@@ -34,34 +37,22 @@ def main(df, dependent_variable):
             dependent_variable, c, df) for c in tqdm(combinations))
         results, results_df = map(list, zip(*results_tuple))
     else:
-        independent_df = df.drop(dependent_variable, axis=1)
         yx_corrs = collections.OrderedDict()
         for var in independent_variables:
             yx_corrs[var] = df[dependent_variable].corr(df[var])
-        combinations = Parallel(n_jobs=4)(delayed(get_combinations_generator)(independent_variables, i) for i in range(1, len(independent_variables)+1))
-        #best_info = stepwise_backwards(dependent_variable, independent_variables, df, ALPHA)
-        #print(best_info)
-        #results_tuple = get_model_result(dependent_variable, get_formula(best_info[0]), df)
-        #results = [results_tuple[0]]
-        #results_df = [results_tuple[1]]
-        results_tuple = stepwise_backwards(dependent_variable, independent_variables, df, ALPHA)
-        results = [results_tuple[0]]
-        results_df = [results_tuple[1]]
+        combinations = Parallel(n_jobs=4)(delayed(get_combinations_generator)(
+            independent_variables, i) for i in range(1, len(independent_variables)+1))
+        results_tuple_backwards = stepwise_backwards(
+            dependent_variable, independent_variables, df, ALPHA)
+        results = [results_tuple_backwards[0]]
+        results_df = [results_tuple_backwards[1]]
+        results_tuple_forwards = stepwise_forwards(
+            dependent_variable, independent_variables, df, ALPHA)
+        if {x[0] for x in results_tuple_forwards[0][0].pvalues.items()} != {x[0] for x in results[0][0].pvalues.items()}:
+            results.append(results_tuple_forwards[0])
+            results_df.append(results_tuple_forwards[1])
     results.sort(key=lambda x: x[0].aic)
     return (results, pd.concat(results_df))
-    best_result = results[0][0]
-    best_result_passing_tests = next(
-        (x for x in results if sum(x[2].values()) == 0), None)
-    #best_result = sm.OLS.from_formula(dependent_variable + "~ 1+hsGPA+PC+skipped+alcohol+gradMI", data=df).fit()
-    #results = [best_result]
-    print(best_result.summary())
-    build_plot(best_result, df, dependent_variable)
-    if best_result_passing_tests:
-        best_result_passing_tests = best_result_passing_tests[0]
-        print(best_result_passing_tests.summary())
-        build_plot(best_result_passing_tests, df, dependent_variable)
-    results_df = pd.concat(results_df)
-    results_df.to_csv(r'results_df.csv', index=None, header=True)
 
 
 def create_dataframe(item):
@@ -87,20 +78,25 @@ def get_combinations(col, l):
         s.append(get_formula(subset))
     return s
 
+
 def get_formula(iterable):
     return "1+" + "+".join(iterable)
+
 
 def get_combinations_generator(col, l):
     return itertools.combinations(col, l)
 
+
 def hellwig(correlation_matrix, dependent_var_correlation_matrix, var_combinations):
     best_info = []
     for combination in tqdm(var_combinations):
-        h = Parallel(n_jobs=-1)(delayed(hellwig_singular)(correlation_matrix, dependent_var_correlation_matrix, c) for c in combination)
-        h = max(h,key=itemgetter(1))
+        h = Parallel(n_jobs=-1)(delayed(hellwig_singular)(correlation_matrix,
+                                                          dependent_var_correlation_matrix, c) for c in combination)
+        h = max(h, key=itemgetter(1))
         best_info.append(h)
-    best_info = max(best_info,key=itemgetter(1))
+    best_info = max(best_info, key=itemgetter(1))
     return best_info
+
 
 def hellwig_singular(correlation_matrix, dependent_var_correlation_matrix, var_combination):
     h = 0
@@ -120,14 +116,39 @@ def get_model_result(dependent_variable, rhs, df):
     r_df = create_dataframe(item)
     return (item, r_df)
 
-def stepwise_backwards(dependent_variable, independent_variables, df, alpha = 0.95):
+
+def stepwise_backwards(dependent_variable, independent_variables, df, alpha=0.95):
     while(True):
-        model = get_model_result(dependent_variable, get_formula(independent_variables), df)
+        model = get_model_result(
+            dependent_variable, get_formula(independent_variables), df)
         pvalues = list(model[0][0].pvalues.items())
         min_pvalues = min(pvalues, key=lambda x: x[1])
         if min_pvalues[1] <= 1-alpha:
             break
         independent_variables.remove(min_pvalues[0])
+    return model
+
+
+def stepwise_forwards(dependent_variable, independent_variables, df, alpha=0.95):
+    checked_variables = []
+    while(True):
+        best_pvalue = -1
+        best_var = None
+        for var in independent_variables:
+            vars = checked_variables.copy()
+            vars.append(var)
+            model = get_model_result(dependent_variable, get_formula(vars), df)
+            pvalues = list(model[0][0].pvalues.items())
+            for pval in pvalues:
+                if pval[0] != "Intercept" and pval[0] not in checked_variables and pval[1] > best_pvalue:
+                    best_pvalue = pval[1]
+                    best_var = pval[0]
+        if not best_var or best_pvalue > 1-alpha:
+            break
+        independent_variables.remove(best_var)
+        checked_variables.append(best_var)
+    model = get_model_result(
+        dependent_variable, get_formula(checked_variables), df)
     return model
 
 
@@ -207,5 +228,5 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--decimal_separator', required=False, default=",",
                         help='csv decimal separator (Default: ,)')
     args = parser.parse_args()
-    main(args.file, args.dependent_variable,
-         args.delimeter, args.decimal_separator)
+    main(read_csv(args.file, args.delimeter,
+                  args.decimal_separator), args.dependent_variable)
